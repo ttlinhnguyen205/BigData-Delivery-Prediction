@@ -1,5 +1,6 @@
 
 import streamlit as st
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -126,8 +127,13 @@ footer {
 # ==================== ĐỌC DỮ LIỆU ====================
 @st.cache_data
 def load_data():
-    data = pd.read_csv("data_analysis.csv")
-    prediction = pd.read_csv("prediction_test.csv")
+    from pathlib import Path
+
+    data_dir = Path(__file__).resolve().parent
+
+    data = pd.read_csv(data_dir / "data_analysis.csv")
+    prediction = pd.read_csv(data_dir / "prediction_test.csv")
+
     return data, prediction
 
 df, pred = load_data()
