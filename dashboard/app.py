@@ -1,8 +1,8 @@
 
 import streamlit as st
-from pathlib import Path
 import pandas as pd
 import numpy as np
+from pathlib import Path
 import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, roc_curve, auc
@@ -127,13 +127,8 @@ footer {
 # ==================== ĐỌC DỮ LIỆU ====================
 @st.cache_data
 def load_data():
-    from pathlib import Path
-
-    data_dir = Path(__file__).resolve().parent
-
-    data = pd.read_csv(data_dir / "data_analysis.csv")
-    prediction = pd.read_csv(data_dir / "prediction_test.csv")
-
+    data = pd.read_csv("data_analysis.csv")
+    prediction = pd.read_csv("prediction_test.csv")
     return data, prediction
 
 df, pred = load_data()
@@ -197,7 +192,8 @@ pages = [
     "Vận chuyển",
     "Thời gian",
     "Đơn hàng",
-    "Dự báo ML"
+    "Dự báo ML",
+    "Dự báo đơn hàng mới"
 ]
 
 page = st.sidebar.radio(
@@ -249,7 +245,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-if data.empty and page != "Dự báo ML":
+if data.empty and page not in ["Dự báo ML", "Dự báo đơn hàng mới"]:
     st.warning("Không có đơn hàng phù hợp với bộ lọc hiện tại.")
     st.stop()
 
@@ -372,6 +368,63 @@ elif page == "Khu vực":
     )
     chart(fig, 420)
 
+    # Phân tích đa chiều: khu vực x phương thức vận chuyển
+    st.markdown("#### Bản đồ nhiệt tỷ lệ giao trễ theo khu vực và vận chuyển")
+    min_orders_heat = st.slider(
+        "Số đơn tối thiểu cho mỗi tổ hợp", 10, 300, 50, 10,
+        key="heat_min_orders"
+    )
+    heat_stats = data.groupby(["order_region", "shipping_mode"]).agg(
+        tong_don=("label", "count"), ty_le=("label", "mean")
+    ).reset_index()
+    heat_stats = heat_stats[heat_stats["tong_don"] >= min_orders_heat].copy()
+    if not heat_stats.empty:
+        heat_stats["ty_le"] *= 100
+        heat_rate = heat_stats.pivot(index="order_region", columns="shipping_mode", values="ty_le")
+        heat_count = heat_stats.pivot(index="order_region", columns="shipping_mode", values="tong_don")
+        heat_rate = heat_rate.sort_index()
+        heat_count = heat_count.reindex(index=heat_rate.index, columns=heat_rate.columns)
+        fig = go.Figure(go.Heatmap(
+            z=heat_rate.to_numpy(), x=heat_rate.columns.tolist(), y=heat_rate.index.tolist(),
+            customdata=heat_count.to_numpy(), colorscale="YlOrRd",
+            colorbar=dict(title="Tỷ lệ (%)"),
+            hovertemplate="Khu vực: %{y}<br>Vận chuyển: %{x}<br>Tỷ lệ trễ: %{z:.2f}%<br>Số đơn: %{customdata:.0f}<extra></extra>"
+        ))
+        fig.update_layout(title="Tỷ lệ giao trễ theo từng tổ hợp", yaxis=dict(autorange="reversed"))
+        chart(fig, max(450, 26 * len(heat_rate) + 130))
+    else:
+        st.info("Không có tổ hợp đủ số đơn theo ngưỡng đã chọn.")
+
+    # Phân tích sâu theo quốc gia, tránh kết luận từ nhóm có quá ít đơn
+    if "order_country" in data.columns:
+        st.markdown("#### Phân tích giao trễ theo quốc gia")
+        c_top, c_min = st.columns(2)
+        with c_top:
+            top_n_countries = st.slider("Số quốc gia hiển thị", 5, 20, 10, key="country_top_n")
+        with c_min:
+            min_orders_country = st.number_input(
+                "Số đơn tối thiểu mỗi quốc gia", min_value=1, max_value=10000,
+                value=100, step=50, key="country_min_orders"
+            )
+        country_stats = data.dropna(subset=["order_country"]).groupby("order_country").agg(
+            tong_don=("label", "count"), don_tre=("label", "sum"), ty_le=("label", "mean")
+        ).reset_index()
+        country_stats = country_stats[country_stats["tong_don"] >= min_orders_country].copy()
+        if not country_stats.empty:
+            country_stats["ty_le"] *= 100
+            top_countries = country_stats.nlargest(top_n_countries, "ty_le").sort_values("ty_le")
+            fig = px.bar(
+                top_countries, x="ty_le", y="order_country", orientation="h",
+                color="tong_don", color_continuous_scale="Blues",
+                custom_data=["tong_don", "don_tre"],
+                labels={"ty_le": "Tỷ lệ giao trễ (%)", "order_country": "Quốc gia", "tong_don": "Tổng đơn"},
+                title="Các quốc gia có tỷ lệ giao trễ cao (đủ ngưỡng số đơn)"
+            )
+            fig.update_traces(hovertemplate="Quốc gia: %{y}<br>Tỷ lệ trễ: %{x:.2f}%<br>Tổng đơn: %{customdata[0]}<br>Đơn trễ: %{customdata[1]}<extra></extra>")
+            chart(fig, max(400, top_n_countries * 31 + 130))
+        else:
+            st.info("Không có quốc gia đủ số đơn theo ngưỡng đã chọn.")
+
     highest = stats.loc[stats["ty_le"].idxmax()]
     insight(
         f"Khu vực <b>{highest['order_region']}</b> có tỷ lệ giao trễ "
@@ -469,6 +522,33 @@ elif page == "Thời gian":
     )
     chart(fig, 370)
 
+    # Xu hướng theo thời gian kết hợp phương thức vận chuyển
+    st.markdown("#### So sánh xu hướng giao trễ theo phương thức vận chuyển")
+    monthly_mode = data.groupby(["order_year", "order_month", "shipping_mode"]).agg(
+        tong_don=("label", "count"), ty_le=("label", "mean")
+    ).reset_index()
+    monthly_mode["ty_le"] *= 100
+    monthly_mode["date"] = pd.to_datetime(dict(
+        year=monthly_mode["order_year"], month=monthly_mode["order_month"], day=1
+    ))
+    mode_options = sorted(monthly_mode["shipping_mode"].dropna().unique().tolist())
+    chosen_modes = st.multiselect(
+        "Chọn phương thức để so sánh", mode_options, default=mode_options,
+        key="trend_shipping_modes"
+    )
+    monthly_mode = monthly_mode[monthly_mode["shipping_mode"].isin(chosen_modes)]
+    if not monthly_mode.empty:
+        fig = px.line(
+            monthly_mode.sort_values("date"), x="date", y="ty_le", color="shipping_mode",
+            markers=True, custom_data=["tong_don"],
+            labels={"date": "Tháng đặt hàng", "ty_le": "Tỷ lệ giao trễ (%)", "shipping_mode": "Vận chuyển"},
+            title="Xu hướng giao trễ theo tháng của từng phương thức"
+        )
+        fig.update_traces(hovertemplate="Tháng: %{x|%m/%Y}<br>Tỷ lệ trễ: %{y:.2f}%<br>Số đơn: %{customdata[0]}<extra></extra>")
+        chart(fig, 430)
+    else:
+        st.info("Hãy chọn ít nhất một phương thức vận chuyển.")
+
     insight(
         "Biểu đồ giúp theo dõi sự thay đổi tỷ lệ giao trễ "
         "theo tháng và theo ngày trong tuần."
@@ -539,6 +619,137 @@ elif page == "Đơn hàng":
         "Phân tích giúp xem xét mối liên hệ giữa giá trị, "
         "số lượng sản phẩm và tỷ lệ giao trễ."
     )
+
+
+# ==================== DỰ BÁO ĐƠN HÀNG MỚI ====================
+elif page == "Dự báo đơn hàng mới":
+    st.subheader("Dự báo nguy cơ giao trễ cho đơn hàng mới")
+    st.caption("Dự báo bằng Pipeline Random Forest 5 đặc trưng đã huấn luyện trong Google Colab.")
+
+    model_dir = Path(__file__).resolve().parent.parent / "models" / "random_forest_final"
+    if not model_dir.is_dir():
+        st.error("Chưa tìm thấy mô hình đã lưu tại: " + str(model_dir))
+        st.info("Hãy chạy mục 7.1 trong notebook để lưu Pipeline, sau đó chạy lại Dashboard.")
+        st.stop()
+
+    @st.cache_resource(show_spinner="Đang nạp mô hình Spark...")
+    def load_spark_pipeline(model_path):
+        from pyspark.sql import SparkSession
+        from pyspark.ml import PipelineModel
+        spark_session = (SparkSession.builder
+                         .appName("DataCo-New-Order-Prediction")
+                         .master("local[*]")
+                         .getOrCreate())
+        return spark_session, PipelineModel.load(model_path)
+
+    # Danh sách danh mục từ dữ liệu đã xuất; giữ nguyên giá trị gốc để dự báo.
+    modes_new = sorted(df["shipping_mode"].dropna().astype(str).unique().tolist())
+    regions_new = sorted(df["order_region"].dropna().astype(str).unique().tolist())
+    countries_new = (
+        sorted(df["order_country"].dropna().astype(str).unique().tolist())
+        if "order_country" in df.columns else []
+    )
+
+    if not countries_new:
+        st.error("data_analysis.csv chưa có cột order_country. Cần xuất thêm cột này trước khi dự báo.")
+        st.stop()
+
+    # Chỉ thay đổi nhãn hiển thị; giá trị truyền vào Pipeline vẫn là dữ liệu gốc.
+    COUNTRY_DISPLAY = {
+    "Afganist�n": "Afganistán",
+    "Arabia Saud�": "Arabia Saudí",
+    "Azerbaiy�n": "Azerbaiyán",
+    "Banglad�s": "Bangladés",
+    "Bar�in": "Baréin",
+    "Ben�n": "Benín",
+    "But�n": "Bután",
+    "B�lgica": "Bélgica",
+    "Camer�n": "Camerún",
+    "Emiratos �rabes Unidos": "Emiratos Árabes Unidos",
+    "Espa�a": "España",
+    "Etiop�a": "Etiopía",
+    "Gab�n": "Gabón",
+    "Hait�": "Haití",
+    "Hungr�a": "Hungría",
+    "Ir�n": "Irán",
+    "Jap�n": "Japón",
+    "Kazajist�n": "Kazajistán",
+    "Kirguist�n": "Kirguistán",
+    "L�bano": "Líbano",
+    "M�xico": "México",
+    "N�ger": "Níger",
+    "Om�n": "Omán",
+    "Pakist�n": "Pakistán",
+    "Panam�": "Panamá",
+    "Pap�a Nueva Guinea": "Papúa Nueva Guinea",
+    "Pa�ses Bajos": "Países Bajos",
+    "Per�": "Perú",
+    "Rep�blica Centroafricana": "República Centroafricana",
+    "Rep�blica Checa": "República Checa",
+    "Rep�blica Democr�tica del Congo": "República Democrática del Congo",
+    "Rep�blica Dominicana": "República Dominicana",
+    "Rep�blica de Gambia": "República de Gambia",
+    "Rep�blica del Congo": "República del Congo",
+    "Sud�n": "Sudán",
+    "Sud�n del Sur": "Sudán del Sur",
+    "S�hara Occidental": "Sáhara Occidental",
+    "Taiw�n": "Taiwán",
+    "Tayikist�n": "Tayikistán",
+    "Turkmenist�n": "Turkmenistán",
+    "Turqu�a": "Turquía",
+    "T�nez": "Túnez",
+    "Uzbekist�n": "Uzbekistán",
+}
+
+    # Ràng buộc quốc gia theo khu vực từ dữ liệu thật
+    region_country_map = (
+        df[["order_region", "order_country"]].dropna().drop_duplicates()
+        .groupby("order_region")["order_country"]
+        .apply(lambda x: sorted(x.astype(str).unique().tolist()))
+        .to_dict()
+    )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        shipping_mode = st.selectbox("Phương thức vận chuyển", modes_new)
+        order_region = st.selectbox("Khu vực", regions_new)
+        order_country = st.selectbox(
+            "Quốc gia", options=region_country_map.get(order_region, []),
+            format_func=lambda value: COUNTRY_DISPLAY.get(value, value),
+            key=f"country_{order_region}"
+        )
+    with col_b:
+        scheduled_days = st.number_input(
+            "Số ngày vận chuyển dự kiến", min_value=0, max_value=30, value=3, step=1
+        )
+        order_month = st.selectbox("Tháng đặt hàng", list(range(1, 13)))
+    with st.form("predict_new_order"):
+        submitted = st.form_submit_button("Dự báo nguy cơ giao trễ", type="primary")
+
+    if submitted:
+        try:
+            spark_session, pipeline = load_spark_pipeline(str(model_dir))
+            from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+            schema = StructType([
+                StructField("shipping_mode", StringType(), False),
+                StructField("order_region", StringType(), False),
+                StructField("order_country", StringType(), False),
+                StructField("scheduled_shipping_days", IntegerType(), False),
+                StructField("order_month", IntegerType(), False),
+            ])
+            row = [(shipping_mode, order_region, order_country, int(scheduled_days), int(order_month))]
+            new_order = spark_session.createDataFrame(row, schema)
+            prediction_row = pipeline.transform(new_order).select("prediction", "probability").first()
+            late = int(prediction_row["prediction"]) == 1
+            late_probability = float(prediction_row["probability"][1])
+            if late:
+                st.error("Kết quả: Có nguy cơ giao trễ")
+            else:
+                st.success("Kết quả: Dự báo không giao trễ")
+            st.metric("Xác suất dự báo giao trễ", f"{late_probability:.2%}")
+            st.caption("Đây là ước lượng của mô hình, không phải cam kết về thời gian giao hàng thực tế.")
+        except Exception as exc:
+            st.error("Không thể chạy dự báo. Kiểm tra môi trường PySpark/Java và mô hình đã lưu.")
+            st.exception(exc)
 
 # ==================== DỰ BÁO ML ====================
 elif page == "Dự báo ML":
